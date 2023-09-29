@@ -1,4 +1,7 @@
-use std::fs;
+use std::{env, fs, io};
+use std::collections::hash_map::DefaultHasher;
+use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -6,14 +9,15 @@ use iced::{Alignment, Application, Command, ContentFit, Event, keyboard, Subscri
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard::{KeyCode, Modifiers};
 use iced::Length::{Fill, FillPortion};
-use iced::widget::{container, horizontal_rule, scrollable, svg, text, text_input};
+use iced::widget::{container, horizontal_rule, pick_list, scrollable, svg, text, text_input};
 use iced::widget::svg::Handle;
 use iced::widget::text_input::Id;
 use keyboard::Event::KeyPressed;
 
 use types::*;
 
-use crate::{col, easing, gen_svg, GuiError, row};
+use crate::{col, easing, GuiError, row};
+use crate::latex::{gen_png, gen_svg, get_dir, set_color};
 
 #[allow(dead_code)]
 pub mod types {
@@ -39,40 +43,116 @@ pub mod types {
     // pub type NumberInput<'a, T> = iced_aw::native::number_input::NumberInput<'a, T, Message, Renderer>;
 }
 
+#[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
+pub enum ImageFormat {
+    #[default]
+    Svg,
+    Png,
+}
+
+impl ImageFormat {
+    pub const ALL: [Self; 2] = [
+        Self::Svg,
+        Self::Png,
+    ];
+
+    pub const fn default_file_name(&self) -> &'static str {
+        match self {
+            ImageFormat::Svg => "eq.svg",
+            ImageFormat::Png => "eq.png",
+        }
+    }
+}
+
+impl Display for ImageFormat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Svg => "svg",
+            Self::Png => "png",
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Latex(String),
     Name(String),
     Color(String),
     Compile,
-    SvgGenerated(Result<PathBuf, GuiError>),
+    SvgGenerated(Result<Dir, GuiError>),
+    PngGenerated(Result<Dir, GuiError>),
     FocusNext,
     FocusPrevious,
+    Format(ImageFormat),
+    OutDir(String),
+}
+
+pub type Dir = PathBuf;
+
+#[derive(Debug, Clone)]
+pub enum State {
+    Compiling,
+    Svg(Dir),
+    Png(Dir),
+    Errored(GuiError),
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::Errored(GuiError::NoLatex)
+    }
 }
 
 pub struct Gui {
     latex: String,
     name: Option<String>,
     color: Option<String>,
-    path: Result<PathBuf, GuiError>,
-    compiling: bool,
+    compiled_color: String,
+    format: ImageFormat,
+    out_dir: PathBuf,
+    state: State,
+}
+
+impl Gui {
+    fn latex_hash(&self) -> u64 {
+        let mut hash = DefaultHasher::default();
+        self.latex.hash(&mut hash);
+        hash.finish()
+    }
+
+    fn copy_to_dest(&self) -> io::Result<()> {
+        let dir = get_dir(self.latex_hash());
+        fs::copy(
+            dir.join(format!(
+                "{}_eq.{}",
+                self.compiled_color,
+                self.format,
+            )),
+            self.out_dir.join(self.name.as_deref().unwrap_or(self.format.default_file_name())),
+        ).map(|_| ())
+    }
 }
 
 fn not_empty(s: &String) -> bool {
     !s.is_empty()
 }
 
-const DEFAULT_COLOR: &'static str = "blue";
-const DEFAULT_FILE_NAME: &'static str = "eq.svg";
+const DEFAULT_COLOR: &'static str = "white";
 
 fn latex_id() -> Id {
     Id::new("latex")
 }
+
 fn color_id() -> Id {
     Id::new("color")
 }
+
 fn file_id() -> Id {
     Id::new("file")
+}
+
+fn out_dir_id() -> Id {
+    Id::new("out_dir")
 }
 
 impl Application for Gui {
@@ -82,13 +162,16 @@ impl Application for Gui {
     type Flags = ();
 
     fn new((): ()) -> (Self, Command<Message>) {
+        let out_dir = env::current_dir().unwrap();
         (
             Self {
                 latex: String::new(),
                 name: None,
                 color: None,
-                path: Err(GuiError::NoLatex),
-                compiling: false,
+                compiled_color: DEFAULT_COLOR.to_string(),
+                format: ImageFormat::default(),
+                out_dir,
+                state: Default::default(),
             },
             text_input::focus(latex_id())
         )
@@ -113,23 +196,92 @@ impl Application for Gui {
                 Command::none()
             }
             Message::Compile => {
-                self.compiling = true;
-                Command::perform(
-                    gen_svg(
-                        self.latex.clone(),
-                        self.color.clone().unwrap_or_else(|| DEFAULT_COLOR.to_string()),
-                        self.name.clone().unwrap_or_else(|| DEFAULT_FILE_NAME.to_string()),
-                    ),
-                    |res| Message::SvgGenerated(res),
-                )
+                if self.latex.is_empty() {
+                    self.state = State::Errored(GuiError::NoLatex);
+                    return Command::none();
+                }
+                self.state = State::Compiling;
+                let hash = self.latex_hash();
+                let color = self.color.as_deref().unwrap_or(DEFAULT_COLOR);
+                self.compiled_color = color.to_string();
+                let dir = get_dir(hash);
+                if dir.exists() {
+                    let img = dir.join(format!(
+                        "{color}_eq.{}",
+                        self.format,
+                    ));
+                    if img.exists() {
+                        self.update(match self.format {
+                            ImageFormat::Svg => Message::SvgGenerated(Ok(dir)),
+                            ImageFormat::Png => Message::PngGenerated(Ok(dir)),
+                        })
+                    } else {
+                        Command::perform(
+                            set_color(
+                                hash,
+                                color.to_string(),
+                            ),
+                            move |e: Result<(), _>| Message::SvgGenerated(e.map(|_| dir)),
+                        )
+                    }
+                } else {
+                    Command::perform(
+                        gen_svg(
+                            self.latex.clone(),
+                            hash,
+                            color.to_string(),
+                        ),
+                        |res| Message::SvgGenerated(res),
+                    )
+                }
             }
-            Message::SvgGenerated(path) => {
-                self.path = path;
-                self.compiling = false;
+            Message::SvgGenerated(dir) => {
+                match dir {
+                    Ok(dir) => {
+                        match self.format {
+                            ImageFormat::Svg => {
+                                self.state = State::Svg(dir);
+                                self.copy_to_dest().unwrap();
+                                Command::none()
+                            }
+                            ImageFormat::Png => Command::perform(
+                                gen_png(
+                                    dir,
+                                    self.color.clone().unwrap_or_else(|| DEFAULT_COLOR.to_string()),
+                                ),
+                                |res| Message::PngGenerated(res),
+                            )
+                        }
+                    }
+                    Err(e) => {
+                        self.state = State::Errored(e);
+                        Command::none()
+                    }
+                }
+            }
+            Message::PngGenerated(dir) => {
+                match dir {
+                    Ok(dir) => {
+                        self.state = State::Png(dir);
+                        self.copy_to_dest().unwrap();
+                    }
+                    Err(e) => self.state = State::Errored(e),
+                }
                 Command::none()
             }
             Message::FocusNext => widget::focus_next(),
             Message::FocusPrevious => widget::focus_previous(),
+            Message::Format(f) => {
+                self.format = f;
+                self.update(Message::Compile)
+            }
+            Message::OutDir(dir) => {
+                println!("dir = {:?}", dir);
+                self.out_dir = dir.into();
+                // don't copy the file eagerly, wait for user to request re-compile cuz otherwise it
+                //  will try to copy to each non-existent directory as they type the full thing in
+                Command::none()
+            }
         }
     }
 
@@ -153,11 +305,28 @@ impl Application for Gui {
                 Fill,
                 text("File: "),
                 text_input(
-                    DEFAULT_FILE_NAME,
+                    self.format.default_file_name(),
                     self.name.as_deref().unwrap_or_default()
                 ).on_input(Message::Name)
                  .on_submit(Message::Compile)
                  .id(file_id()),
+            ].align_items(Alignment::Center),
+            6,
+            row![
+                text("Format: "),
+                pick_list(
+                    &ImageFormat::ALL[..],
+                    Some(self.format),
+                    Message::Format,
+                ),
+                Fill,
+                text("Directory: "),
+                text_input(
+                    ".",
+                    &self.out_dir.to_string_lossy()
+                ).on_input(Message::OutDir)
+                 .on_submit(Message::Compile)
+                 .id(out_dir_id())
             ].align_items(Alignment::Center),
             horizontal_rule(20),
         ].width(FillPortion(3));
@@ -166,32 +335,65 @@ impl Application for Gui {
             input_col,
             Fill
         ];
-        let content = if self.compiling {
-            let spinner = Circular::new()
-                .size(200.0)
-                .bar_height(20.0)
-                .easing(&easing::EMPHASIZED_DECELERATE)
-                .cycle_duration(Duration::from_secs_f32(2.0));
-            Container::new(spinner)
-        } else {
-            match &self.path {
-                Ok(path) => {
-                    // have to read the svg manually because otherwise it won't update the image
-                    //  if the same path is used
-                    let data = fs::read(path).unwrap();
-                    let svg = svg(Handle::from_memory(data))
-                        .height(Fill)
-                        .content_fit(ContentFit::Contain);
-                    Container::new(svg)
-                }
-                Err(e) => Container::new(scrollable(
-                    text(e).size(40)
-                )),
+        let content = match &self.state {
+            State::Compiling => {
+                let spinner = Circular::new()
+                    .size(200.0)
+                    .bar_height(20.0)
+                    .easing(&easing::EMPHASIZED_DECELERATE)
+                    .cycle_duration(Duration::from_secs_f32(2.0));
+                Container::new(spinner)
             }
+            State::Svg(dir) | State::Png(dir) => {
+                // have to read the svg manually because otherwise it won't update the image
+                //  if the same path is used
+                // println!("dir = {:?}", dir);
+                let file_name = format!(
+                    "{}_eq.svg",
+                    self.compiled_color,
+                );
+                // println!("file_name = {:?}", file_name);
+                let data = fs::read(dir.join(file_name)).unwrap();
+                let svg = svg(Handle::from_memory(data))
+                    .height(Fill)
+                    .content_fit(ContentFit::Contain);
+                Container::new(svg)
+                    .padding(8)
+            }
+            State::Errored(e) => Container::new(scrollable(
+                text(e).size(40)
+            )),
         }.align_x(Horizontal::Center)
             .align_y(Vertical::Center)
             .height(Fill)
             .width(Fill);
+        // let content = if self.compiling {
+        //     let spinner = Circular::new()
+        //         .size(200.0)
+        //         .bar_height(20.0)
+        //         .easing(&easing::EMPHASIZED_DECELERATE)
+        //         .cycle_duration(Duration::from_secs_f32(2.0));
+        //     Container::new(spinner)
+        // } else {
+        //     match &self.dir {
+        //         Ok(path) => {
+        //             // have to read the svg manually because otherwise it won't update the image
+        //             //  if the same path is used
+        //             let data = fs::read(path).unwrap();
+        //             let svg = svg(Handle::from_memory(data))
+        //                 .height(Fill)
+        //                 .content_fit(ContentFit::Contain);
+        //             Container::new(svg)
+        //                 .padding(8)
+        //         }
+        //         Err(e) => Container::new(scrollable(
+        //             text(e).size(40)
+        //         )),
+        //     }
+        // }.align_x(Horizontal::Center)
+        //     .align_y(Vertical::Center)
+        //     .height(Fill)
+        //     .width(Fill);
         container(col![row, content])
             .align_x(Horizontal::Center)
             .align_y(Vertical::Top)
