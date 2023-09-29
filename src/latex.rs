@@ -24,7 +24,7 @@ pub enum CommandError {
     },
 }
 
-const LATEX_START: &str = r#"\documentclass[12pt]{article}
+const LATEX_START: &str = r"\documentclass[12pt]{article}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{amsfonts}
@@ -34,12 +34,11 @@ const LATEX_START: &str = r#"\documentclass[12pt]{article}
 \begin{document}
 \color{white}
 \begin{align*}
-    \color{white}
-    "#;
+    ";
 
-const LATEX_END: &str = r#"
+const LATEX_END: &str = r"
 \end{align*}
-\end{document}"#;
+\end{document}";
 
 static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
     let path = dirs::data_local_dir()
@@ -62,7 +61,7 @@ pub async fn gen_svg(latex: String, hash: u64, color: String) -> Result<Dir, Gui
     fs::create_dir(&dir).await
         .map_err(|_| GuiError::TempDir)?;
 
-    println!("dir = {:?}", dir);
+    // println!("dir = {:?}", dir);
     env::set_current_dir(&dir)
         .map_err(|_| GuiError::GetSetCurrentDir)?;
 
@@ -95,18 +94,17 @@ pub async fn gen_svg(latex: String, hash: u64, color: String) -> Result<Dir, Gui
     Ok(dir)
 }
 
-pub async fn gen_png(dir: Dir, color: String) -> Result<Dir, GuiError> {
+pub async fn gen_png(dir: Dir, color: String, density: usize) -> Result<Dir, GuiError> {
     let initial_dir = env::current_dir()
         .map_err(|_| GuiError::GetSetCurrentDir)?;
 
     env::set_current_dir(&dir)
         .map_err(|_| GuiError::GetSetCurrentDir)?;
 
-    let density = 600;
     let _output = run_command("magick.exe", [
         "convert",
         "-background", "none",
-        "-density", &format!("{density}"),
+        "-density", &density.to_string(),
         &format!("{color}_eq.svg"),
         &format!("{color}_eq.png"),
     ]).await?;
@@ -135,33 +133,6 @@ pub async fn set_color(hash: u64, color: String) -> Result<(), GuiError> {
         .map_err(|_| GuiError::WriteFile(path_colored.to_string_lossy().to_string().into()))
 }
 
-// async fn set_color(color: &str) -> () {
-//     let mut in_page = false;
-//     let contents = fs::read_to_string("eq.svg")
-//         .await
-//         .map_err(|_| GuiError::ReadFile("eq.svg".to_string()))?
-//         .lines()
-//         .map(|line| {
-//             let mut line = line.to_string();
-//             if line == "</g>" {
-//                 in_page = false;
-//             }
-//             if in_page {
-//                 let tag = &line[..line.len() - 2];
-//                 line = format!("{tag} fill='{color}'/>");
-//             }
-//             if line.starts_with("<g id=") {
-//                 in_page = true;
-//             }
-//             line
-//         })
-//         .join("\n");
-//     let color_filename = format!("{color}_eq.svg");
-//     fs::write(&color_filename, contents)
-//         .await
-//         .map_err(|_| GuiError::WriteFile(color_filename.into()))?;
-// }
-
 async fn run_command<I, S>(command: &str, args: I) -> Result<String, CommandError>
     where
         I: IntoIterator<Item=S>,
@@ -188,9 +159,11 @@ async fn run_command<I, S>(command: &str, args: I) -> Result<String, CommandErro
         Ok(utf8_to_string(&stdout))
     } else {
         println!("stderr = {}", utf8_to_string(&stderr));
+        println!("stdout = {}", utf8_to_string(&stdout));
         let message = utf8_to_string(&stdout);
-        println!("stdout = {}", message);
-        let message = if let Some(idx) = message.find('!') {
+        let message = if message.is_empty() {
+            utf8_to_string(&stderr)
+        } else if let Some(idx) = message.find('!') {
             message[idx..].lines()
                 .take_while(|l| l.chars().any(|c| !c.is_ascii_whitespace()))
                 .join("\n")

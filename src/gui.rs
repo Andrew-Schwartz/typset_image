@@ -5,18 +5,20 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use iced::{Alignment, Application, Command, ContentFit, Event, keyboard, Subscription, Theme, widget};
+use iced::{Alignment, Application, Command, ContentFit, Event, font, keyboard, Subscription, Theme, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard::{KeyCode, Modifiers};
 use iced::Length::{Fill, FillPortion};
-use iced::widget::{container, horizontal_rule, pick_list, scrollable, svg, text, text_input};
+use iced::widget::{button, container, horizontal_rule, image, pick_list, scrollable, svg, text, text_input};
 use iced::widget::svg::Handle;
 use iced::widget::text_input::Id;
 use keyboard::Event::KeyPressed;
+use rfd::{AsyncFileDialog, FileHandle};
 
 use types::*;
 
-use crate::{col, easing, GuiError, row};
+use crate::{col, easing, GuiError, ICON_FONT, ICON_FONT_BYTES, row};
+use crate::icons::Icon;
 use crate::latex::{gen_png, gen_svg, get_dir, set_color};
 
 #[allow(dead_code)]
@@ -56,10 +58,10 @@ impl ImageFormat {
         Self::Png,
     ];
 
-    pub const fn default_file_name(&self) -> &'static str {
+    pub const fn default_file_name(self) -> &'static str {
         match self {
-            ImageFormat::Svg => "eq.svg",
-            ImageFormat::Png => "eq.png",
+            Self::Svg => "eq.svg",
+            Self::Png => "eq.png",
         }
     }
 }
@@ -75,6 +77,7 @@ impl Display for ImageFormat {
 
 #[derive(Clone, Debug)]
 pub enum Message {
+    FontLoaded,
     Latex(String),
     Name(String),
     Color(String),
@@ -84,7 +87,10 @@ pub enum Message {
     FocusNext,
     FocusPrevious,
     Format(ImageFormat),
+    SetDpi(String),
     OutDir(String),
+    OpenExplorer,
+    PickedDir(Option<PathBuf>),
 }
 
 pub type Dir = PathBuf;
@@ -109,8 +115,10 @@ pub struct Gui {
     color: Option<String>,
     compiled_color: String,
     format: ImageFormat,
+    dpi: usize,
     out_dir: PathBuf,
     state: State,
+    folder_icon: Icon,
 }
 
 impl Gui {
@@ -118,6 +126,10 @@ impl Gui {
         let mut hash = DefaultHasher::default();
         self.latex.hash(&mut hash);
         hash.finish()
+    }
+
+    fn color(&self) -> &str {
+        self.color.as_deref().unwrap_or(DEFAULT_COLOR)
     }
 
     fn copy_to_dest(&self) -> io::Result<()> {
@@ -137,7 +149,7 @@ fn not_empty(s: &String) -> bool {
     !s.is_empty()
 }
 
-const DEFAULT_COLOR: &'static str = "white";
+const DEFAULT_COLOR: &str = "white";
 
 fn latex_id() -> Id {
     Id::new("latex")
@@ -170,10 +182,16 @@ impl Application for Gui {
                 color: None,
                 compiled_color: DEFAULT_COLOR.to_string(),
                 format: ImageFormat::default(),
+                dpi: 600,
                 out_dir,
                 state: Default::default(),
+                folder_icon: Icon::Folder,
             },
-            text_input::focus(latex_id())
+            Command::batch([
+                text_input::focus(latex_id()),
+                font::load(ICON_FONT_BYTES)
+                    .map(|_| Message::FontLoaded)
+            ])
         )
     }
 
@@ -202,25 +220,21 @@ impl Application for Gui {
                 }
                 self.state = State::Compiling;
                 let hash = self.latex_hash();
-                let color = self.color.as_deref().unwrap_or(DEFAULT_COLOR);
-                self.compiled_color = color.to_string();
+                let color = self.color().to_string();
+                self.compiled_color = color.clone();
                 let dir = get_dir(hash);
                 if dir.exists() {
                     let img = dir.join(format!(
                         "{color}_eq.{}",
                         self.format,
                     ));
-                    if img.exists() {
-                        self.update(match self.format {
-                            ImageFormat::Svg => Message::SvgGenerated(Ok(dir)),
-                            ImageFormat::Png => Message::PngGenerated(Ok(dir)),
-                        })
+                    // don't recompile latex for already existing svg's, do rerun dvisvgm in case
+                    // dpi has changed
+                    if img.exists() && self.format == ImageFormat::Svg {
+                        self.update(Message::SvgGenerated(Ok(dir)))
                     } else {
                         Command::perform(
-                            set_color(
-                                hash,
-                                color.to_string(),
-                            ),
+                            set_color(hash, color),
                             move |e: Result<(), _>| Message::SvgGenerated(e.map(|_| dir)),
                         )
                     }
@@ -229,9 +243,9 @@ impl Application for Gui {
                         gen_svg(
                             self.latex.clone(),
                             hash,
-                            color.to_string(),
+                            color,
                         ),
-                        |res| Message::SvgGenerated(res),
+                        Message::SvgGenerated,
                     )
                 }
             }
@@ -247,9 +261,10 @@ impl Application for Gui {
                             ImageFormat::Png => Command::perform(
                                 gen_png(
                                     dir,
-                                    self.color.clone().unwrap_or_else(|| DEFAULT_COLOR.to_string()),
+                                    self.color().to_string(),
+                                    self.dpi,
                                 ),
-                                |res| Message::PngGenerated(res),
+                                Message::PngGenerated,
                             )
                         }
                     }
@@ -275,17 +290,56 @@ impl Application for Gui {
                 self.format = f;
                 self.update(Message::Compile)
             }
+            Message::SetDpi(dpi) => {
+                if dpi.is_empty() {
+                    self.dpi = 0;
+                } else if let Ok(dpi) = dpi.parse() {
+                    self.dpi = dpi;
+                }
+                self.update(Message::Compile)
+            }
             Message::OutDir(dir) => {
-                println!("dir = {:?}", dir);
+                // println!("dir = {:?}", dir);
                 self.out_dir = dir.into();
                 // don't copy the file eagerly, wait for user to request re-compile cuz otherwise it
                 //  will try to copy to each non-existent directory as they type the full thing in
+                //  and will successfully copy to each subdirectory which is no good
+                Command::none()
+            }
+            Message::OpenExplorer => {
+                self.folder_icon = Icon::Folder2Open;
+                Command::perform(
+                    AsyncFileDialog::new().pick_folder(),
+                    |fh: Option<FileHandle>| Message::PickedDir(fh.map(|fh| fh.path().to_path_buf())),
+                )
+            }
+            Message::PickedDir(dir) => {
+                self.folder_icon = Icon::Folder2;
+                if let Some(dir) = dir {
+                    self.out_dir = dir;
+                }
+                Command::none()
+            }
+            Message::FontLoaded => {
                 Command::none()
             }
         }
     }
 
     fn view(&self) -> Element<'_> {
+        let png_density = if self.format == ImageFormat::Png {
+            row![
+                6,
+                text("dpi: "),
+                text_input(
+                    "dpi",
+                    &self.dpi.to_string()
+                ).width(100.0)
+                 .on_input(Message::SetDpi),
+            ]
+        } else {
+            row!()
+        };
         let input_col = col![
             text_input(
                 "latex",
@@ -319,6 +373,7 @@ impl Application for Gui {
                     Some(self.format),
                     Message::Format,
                 ),
+                png_density,
                 Fill,
                 text("Directory: "),
                 text_input(
@@ -326,7 +381,11 @@ impl Application for Gui {
                     &self.out_dir.to_string_lossy()
                 ).on_input(Message::OutDir)
                  .on_submit(Message::Compile)
-                 .id(out_dir_id())
+                 .id(out_dir_id()),
+                button(
+                    text(Icon::Folder2)
+                        .font(ICON_FONT)
+                ).on_press(Message::OpenExplorer),
             ].align_items(Alignment::Center),
             horizontal_rule(20),
         ].width(FillPortion(3));
@@ -342,9 +401,9 @@ impl Application for Gui {
                     .bar_height(20.0)
                     .easing(&easing::EMPHASIZED_DECELERATE)
                     .cycle_duration(Duration::from_secs_f32(2.0));
-                Container::new(spinner)
+                container(spinner)
             }
-            State::Svg(dir) | State::Png(dir) => {
+            State::Svg(dir) => {
                 // have to read the svg manually because otherwise it won't update the image
                 //  if the same path is used
                 // println!("dir = {:?}", dir);
@@ -357,10 +416,22 @@ impl Application for Gui {
                 let svg = svg(Handle::from_memory(data))
                     .height(Fill)
                     .content_fit(ContentFit::Contain);
-                Container::new(svg)
+                container(svg)
                     .padding(8)
             }
-            State::Errored(e) => Container::new(scrollable(
+            State::Png(dir) => {
+                let file_name = format!(
+                    "{}_eq.png",
+                    self.compiled_color,
+                );
+                // let data = fs::read(dir.join(file_name)).unwrap();
+                let png = image(dir.join(file_name))
+                    .height(Fill)
+                    .content_fit(ContentFit::Contain);
+                container(png)
+                    .padding(8)
+            }
+            State::Errored(e) => container(scrollable(
                 text(e).size(40)
             )),
         }.align_x(Horizontal::Center)
