@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use iced::{Application, Font, Settings};
 use thiserror::Error;
-use latex::CommandError;
+use backends::CommandError;
 
 mod gui;
 mod utils;
@@ -23,6 +23,8 @@ mod easing;
 mod circular;
 mod latex;
 mod icons;
+mod typst;
+mod backends;
 
 pub const ICON_FONT_BYTES: &[u8] = include_bytes!("../resources/latex-image-icons.ttf");
 
@@ -30,8 +32,8 @@ pub const ICON_FONT: Font = Font::with_name("latex-image-icons");
 
 #[derive(Debug, Error, Clone)]
 pub enum GuiError {
-    #[error("Enter a LaTeX expression!")]
-    NoLatex,
+    #[error("Enter a {0} expression!")]
+    NoEquation(&'static str),
     #[error("could not create temporary directory")]
     // todo rename
     TempDir,

@@ -13,13 +13,15 @@ use iced::widget::{button, container, horizontal_rule, image, pick_list, scrolla
 use iced::widget::svg::Handle;
 use iced::widget::text_input::Id;
 use keyboard::Event::KeyPressed;
+use once_cell::sync::Lazy;
 use rfd::{AsyncFileDialog, FileHandle};
+use tempdir::TempDir;
 
 use types::*;
 
-use crate::{col, easing, GuiError, ICON_FONT, ICON_FONT_BYTES, row};
+use crate::{col, easing, GuiError, ICON_FONT, ICON_FONT_BYTES, latex, row, typst};
+use crate::backends::Backend;
 use crate::icons::Icon;
-use crate::latex::{gen_png, gen_svg, get_dir, set_color};
 
 #[allow(dead_code)]
 pub mod types {
@@ -78,12 +80,12 @@ impl Display for ImageFormat {
 #[derive(Clone, Debug)]
 pub enum Message {
     FontLoaded,
-    Latex(String),
+    EditEquation(String),
     Name(String),
     Color(String),
     Compile,
-    SvgGenerated(Result<Dir, GuiError>),
-    PngGenerated(Result<Dir, GuiError>),
+    SvgGenerated(Result<(), GuiError>),
+    PngGenerated(Result<(), GuiError>),
     FocusNext,
     FocusPrevious,
     Format(ImageFormat),
@@ -91,6 +93,8 @@ pub enum Message {
     OutDir(String),
     OpenExplorer,
     PickedDir(Option<PathBuf>),
+    SwitchBackend,
+    DoneWatchingHmm(GuiError),
 }
 
 pub type Dir = PathBuf;
@@ -105,12 +109,12 @@ pub enum State {
 
 impl Default for State {
     fn default() -> Self {
-        Self::Errored(GuiError::NoLatex)
+        Self::Errored(GuiError::NoEquation(Backend::default().stylized()))
     }
 }
 
 pub struct Gui {
-    latex: String,
+    equation: String,
     name: Option<String>,
     color: Option<String>,
     compiled_color: String,
@@ -119,12 +123,14 @@ pub struct Gui {
     out_dir: PathBuf,
     state: State,
     folder_icon: Icon,
+    backend: Backend,
+    typst_dir: TempDir,
 }
 
 impl Gui {
-    fn latex_hash(&self) -> u64 {
+    fn equation_hash(&self) -> u64 {
         let mut hash = DefaultHasher::default();
-        self.latex.hash(&mut hash);
+        self.equation.hash(&mut hash);
         hash.finish()
     }
 
@@ -132,8 +138,15 @@ impl Gui {
         self.color.as_deref().unwrap_or(DEFAULT_COLOR)
     }
 
+    fn cache_dir(&self) -> Dir {
+        match self.backend {
+            Backend::LaTeX => get_dir(self.equation_hash()),
+            Backend::Typst => self.typst_dir.path().to_owned(),
+        }
+    }
+
     fn copy_to_dest(&self) -> io::Result<()> {
-        let dir = get_dir(self.latex_hash());
+        let dir = self.cache_dir();
         fs::copy(
             dir.join(format!(
                 "{}_eq.{}",
@@ -175,9 +188,12 @@ impl Application for Gui {
 
     fn new((): ()) -> (Self, Command<Message>) {
         let out_dir = env::current_dir().unwrap();
+        let typst_dir = TempDir::new("typst_").unwrap();
+        println!("typst_dir = {:?}", typst_dir);
+        let typst_dir_path = typst_dir.path().to_owned();
         (
             Self {
-                latex: String::new(),
+                equation: String::new(),
                 name: None,
                 color: None,
                 compiled_color: DEFAULT_COLOR.to_string(),
@@ -186,11 +202,17 @@ impl Application for Gui {
                 out_dir,
                 state: Default::default(),
                 folder_icon: Icon::Folder,
+                backend: Default::default(),
+                typst_dir,
             },
             Command::batch([
                 text_input::focus(latex_id()),
                 font::load(ICON_FONT_BYTES)
-                    .map(|_| Message::FontLoaded)
+                    .map(|_| Message::FontLoaded),
+                // Command::perform(
+                //     typst::watch(typst_dir_path),
+                //     |res: Result<Never, _>| Message::DoneWatchingHmm(res.unwrap_err()),
+                // )
             ])
         )
     }
@@ -201,9 +223,13 @@ impl Application for Gui {
 
     fn update(&mut self, message: Self::Message) -> Command<Message> {
         match message {
-            Message::Latex(latex) => {
-                self.latex = latex;
-                Command::none()
+            Message::EditEquation(equation) => {
+                self.equation = equation;
+                if self.backend == Backend::Typst {
+                    self.update(Message::Compile)
+                } else {
+                    Command::none()
+                }
             }
             Message::Name(name) => {
                 self.name = Some(name).filter(not_empty);
@@ -214,44 +240,74 @@ impl Application for Gui {
                 Command::none()
             }
             Message::Compile => {
-                if self.latex.is_empty() {
-                    self.state = State::Errored(GuiError::NoLatex);
+                if self.equation.is_empty() {
+                    self.state = State::Errored(GuiError::NoEquation(self.backend.stylized()));
                     return Command::none();
                 }
                 self.state = State::Compiling;
-                let hash = self.latex_hash();
                 let color = self.color().to_string();
                 self.compiled_color = color.clone();
-                let dir = get_dir(hash);
-                if dir.exists() {
-                    let img = dir.join(format!(
-                        "{color}_eq.{}",
-                        self.format,
-                    ));
-                    // don't recompile latex for already existing svg's, do rerun dvisvgm in case
-                    // dpi has changed
-                    if img.exists() && self.format == ImageFormat::Svg {
-                        self.update(Message::SvgGenerated(Ok(dir)))
-                    } else {
+                match self.backend {
+                    Backend::LaTeX => {
+                        let hash = self.equation_hash();
+                        let dir = get_dir(hash);
+                        if dir.exists() {
+                            let img = dir.join(format!(
+                                "{color}_eq.{}",
+                                self.format,
+                            ));
+                            // don't recompile latex for already existing svg's, do rerun dvisvgm in case
+                            // dpi has changed
+                            if img.exists() && self.format == ImageFormat::Svg {
+                                self.update(Message::SvgGenerated(Ok(())))
+                            } else {
+                                Command::perform(
+                                    latex::set_color(
+                                        dir,
+                                        color,
+                                    ),
+                                    move |e: Result<(), _>| Message::SvgGenerated(e.map(|_| ())),
+                                )
+                            }
+                        } else {
+                            Command::perform(
+                                latex::gen_svg(
+                                    self.equation.clone(),
+                                    dir,
+                                    color,
+                                ),
+                                Message::SvgGenerated,
+                            )
+                        }
+                    }
+                    Backend::Typst => {
+                        // match self.format {
+                        //     ImageFormat::Svg => ,
+                        //     ImageFormat::Png => Command::perform(
+                        //         typst::gen_png(
+                        //             self.equation.clone(),
+                        //             self.typst_dir.path().to_owned(),
+                        //             self.color().into(),
+                        //             self.dpi,
+                        //         ),
+                        //         Message::SvgGenerated,
+                        //     )
+                        // }
                         Command::perform(
-                            set_color(hash, color),
-                            move |e: Result<(), _>| Message::SvgGenerated(e.map(|_| dir)),
+                            typst::gen_svg(
+                                self.equation.clone(),
+                                self.typst_dir.path().to_owned(),
+                                color,
+                            ),
+                            Message::SvgGenerated,
                         )
                     }
-                } else {
-                    Command::perform(
-                        gen_svg(
-                            self.latex.clone(),
-                            hash,
-                            color,
-                        ),
-                        Message::SvgGenerated,
-                    )
                 }
             }
             Message::SvgGenerated(dir) => {
                 match dir {
-                    Ok(dir) => {
+                    Ok(()) => {
+                        let dir = self.cache_dir();
                         match self.format {
                             ImageFormat::Svg => {
                                 self.state = State::Svg(dir);
@@ -259,7 +315,8 @@ impl Application for Gui {
                                 Command::none()
                             }
                             ImageFormat::Png => Command::perform(
-                                gen_png(
+                                self.backend.gen_png(
+                                    self.equation.clone(),
                                     dir,
                                     self.color().to_string(),
                                     self.dpi,
@@ -274,9 +331,10 @@ impl Application for Gui {
                     }
                 }
             }
-            Message::PngGenerated(dir) => {
-                match dir {
-                    Ok(dir) => {
+            Message::PngGenerated(res) => {
+                match res {
+                    Ok(()) => {
+                        let dir = self.cache_dir();
                         self.state = State::Png(dir);
                         self.copy_to_dest().unwrap();
                     }
@@ -323,6 +381,16 @@ impl Application for Gui {
             Message::FontLoaded => {
                 Command::none()
             }
+            Message::SwitchBackend => {
+                self.backend = match self.backend {
+                    Backend::LaTeX => Backend::Typst,
+                    Backend::Typst => Backend::LaTeX,
+                };
+                self.update(Message::Compile)
+            }
+            Message::DoneWatchingHmm(e) => {
+                panic!("{e}")
+            }
         }
     }
 
@@ -341,12 +409,16 @@ impl Application for Gui {
             row!()
         };
         let input_col = col![
-            text_input(
-                "latex",
-                &self.latex,
-            ).on_input(Message::Latex)
-             .on_submit(Message::Compile)
-             .id(latex_id()),
+            row![
+                text_input(
+                    self.backend.name(),
+                    &self.equation,
+                ).on_input(Message::EditEquation)
+                 .on_submit(Message::Compile)
+                 .id(latex_id()),
+                button(self.backend.letter())
+                    .on_press(Message::SwitchBackend),
+            ],
             6,
             row![
                 text("Color: "),
@@ -411,7 +483,6 @@ impl Application for Gui {
                     "{}_eq.svg",
                     self.compiled_color,
                 );
-                // println!("file_name = {:?}", file_name);
                 let data = fs::read(dir.join(file_name)).unwrap();
                 let svg = svg(Handle::from_memory(data))
                     .height(Fill)
@@ -420,12 +491,14 @@ impl Application for Gui {
                     .padding(8)
             }
             State::Png(dir) => {
+                // have to read the png manually because otherwise it won't update the image
+                //  if the same path is used
                 let file_name = format!(
                     "{}_eq.png",
                     self.compiled_color,
                 );
-                // let data = fs::read(dir.join(file_name)).unwrap();
-                let png = image(dir.join(file_name))
+                let data = fs::read(dir.join(file_name)).unwrap();
+                let png = image(image::Handle::from_memory(data))
                     .height(Fill)
                     .content_fit(ContentFit::Contain);
                 container(png)
@@ -484,4 +557,17 @@ impl Application for Gui {
             _ => None,
         })
     }
+}
+
+static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    let path = dirs::data_local_dir()
+        .expect("unsupported os?")
+        .join("latex_image");
+    std::fs::create_dir_all(&path).unwrap();
+    path
+});
+
+pub fn get_dir(hash: u64) -> Dir {
+    let hash_dir = format!("latex_{hash}");
+    CACHE_DIR.join(hash_dir)
 }
