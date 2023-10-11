@@ -16,21 +16,21 @@ pub enum Backend {
 }
 
 impl Backend {
-    pub fn letter(&self) -> &'static str {
+    pub const fn letter(self) -> &'static str {
         match self {
             Self::LaTeX => "L",
             Self::Typst => "T",
         }
     }
 
-    pub fn name(&self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::LaTeX => "latex",
             Self::Typst => "typst",
         }
     }
 
-    pub fn stylized(&self) -> &'static str {
+    pub const fn stylized(self) -> &'static str {
         match self {
             Self::LaTeX => "LaTeX",
             Self::Typst => "Typst",
@@ -59,13 +59,13 @@ pub enum CommandError {
 
 pub async fn run_command<I, S>(command: &str, args: I) -> Result<String, CommandError>
     where
-        I: IntoIterator<Item=S>,
+        I: IntoIterator<Item=S> + Send,
         S: AsRef<OsStr>,
 {
     fn utf8_to_string(utf8: &[u8]) -> String {
         std::str::from_utf8(utf8)
             .map(str::to_string)
-            .expect("latex & dvisvgm always have utf8 outputs")
+            .expect("latex, typst, dvisvgm always have utf8 outputs")
     }
     // Constant can be found in `winapi` or `windows` crates as well
     //
@@ -82,9 +82,9 @@ pub async fn run_command<I, S>(command: &str, args: I) -> Result<String, Command
     if status.success() {
         Ok(utf8_to_string(&stdout))
     } else {
-        println!("stderr = {}", utf8_to_string(&stderr));
-        println!("stdout = {}", utf8_to_string(&stdout));
         let message = utf8_to_string(&stdout);
+        println!("stdout = {}", message);
+        println!("stderr = {}", utf8_to_string(&stderr));
         let message = if message.is_empty() {
             utf8_to_string(&stderr)
         } else if let Some(idx) = message.find('!') {

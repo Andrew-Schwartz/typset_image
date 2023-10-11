@@ -94,7 +94,6 @@ pub enum Message {
     OpenExplorer,
     PickedDir(Option<PathBuf>),
     SwitchBackend,
-    DoneWatchingHmm(GuiError),
 }
 
 pub type Dir = PathBuf;
@@ -153,7 +152,10 @@ impl Gui {
                 self.compiled_color,
                 self.format,
             )),
-            self.out_dir.join(self.name.as_deref().unwrap_or(self.format.default_file_name())),
+            self.out_dir.join(
+                self.name.as_deref()
+                    .unwrap_or(self.format.default_file_name())
+            ),
         ).map(|_| ())
     }
 }
@@ -187,10 +189,6 @@ impl Application for Gui {
     type Flags = ();
 
     fn new((): ()) -> (Self, Command<Message>) {
-        let out_dir = env::current_dir().unwrap();
-        let typst_dir = TempDir::new("typst_").unwrap();
-        println!("typst_dir = {:?}", typst_dir);
-        let typst_dir_path = typst_dir.path().to_owned();
         (
             Self {
                 equation: String::new(),
@@ -199,20 +197,16 @@ impl Application for Gui {
                 compiled_color: DEFAULT_COLOR.to_string(),
                 format: ImageFormat::default(),
                 dpi: 600,
-                out_dir,
+                out_dir: env::current_dir().unwrap(),
                 state: Default::default(),
                 folder_icon: Icon::Folder,
                 backend: Default::default(),
-                typst_dir,
+                typst_dir: TempDir::new("typst_").unwrap(),
             },
             Command::batch([
                 text_input::focus(latex_id()),
                 font::load(ICON_FONT_BYTES)
                     .map(|_| Message::FontLoaded),
-                // Command::perform(
-                //     typst::watch(typst_dir_path),
-                //     |res: Result<Never, _>| Message::DoneWatchingHmm(res.unwrap_err()),
-                // )
             ])
         )
     }
@@ -251,7 +245,9 @@ impl Application for Gui {
                     Backend::LaTeX => {
                         let hash = self.equation_hash();
                         let dir = get_dir(hash);
+                        println!("dir = {:?}", dir);
                         if dir.exists() {
+                            println!("dir exists!");
                             let img = dir.join(format!(
                                 "{color}_eq.{}",
                                 self.format,
@@ -266,10 +262,11 @@ impl Application for Gui {
                                         dir,
                                         color,
                                     ),
-                                    move |e: Result<(), _>| Message::SvgGenerated(e.map(|_| ())),
+                                    move |e: Result<(), _>| Message::SvgGenerated(e),
                                 )
                             }
                         } else {
+                            println!("doesn't exist, performing `latex::gen_svg`");
                             Command::perform(
                                 latex::gen_svg(
                                     self.equation.clone(),
@@ -280,28 +277,14 @@ impl Application for Gui {
                             )
                         }
                     }
-                    Backend::Typst => {
-                        // match self.format {
-                        //     ImageFormat::Svg => ,
-                        //     ImageFormat::Png => Command::perform(
-                        //         typst::gen_png(
-                        //             self.equation.clone(),
-                        //             self.typst_dir.path().to_owned(),
-                        //             self.color().into(),
-                        //             self.dpi,
-                        //         ),
-                        //         Message::SvgGenerated,
-                        //     )
-                        // }
-                        Command::perform(
-                            typst::gen_svg(
-                                self.equation.clone(),
-                                self.typst_dir.path().to_owned(),
-                                color,
-                            ),
-                            Message::SvgGenerated,
-                        )
-                    }
+                    Backend::Typst => Command::perform(
+                        typst::gen_svg(
+                            self.equation.clone(),
+                            self.typst_dir.path().to_owned(),
+                            color,
+                        ),
+                        Message::SvgGenerated,
+                    ),
                 }
             }
             Message::SvgGenerated(dir) => {
@@ -387,9 +370,6 @@ impl Application for Gui {
                     Backend::Typst => Backend::LaTeX,
                 };
                 self.update(Message::Compile)
-            }
-            Message::DoneWatchingHmm(e) => {
-                panic!("{e}")
             }
         }
     }
@@ -511,33 +491,6 @@ impl Application for Gui {
             .align_y(Vertical::Center)
             .height(Fill)
             .width(Fill);
-        // let content = if self.compiling {
-        //     let spinner = Circular::new()
-        //         .size(200.0)
-        //         .bar_height(20.0)
-        //         .easing(&easing::EMPHASIZED_DECELERATE)
-        //         .cycle_duration(Duration::from_secs_f32(2.0));
-        //     Container::new(spinner)
-        // } else {
-        //     match &self.dir {
-        //         Ok(path) => {
-        //             // have to read the svg manually because otherwise it won't update the image
-        //             //  if the same path is used
-        //             let data = fs::read(path).unwrap();
-        //             let svg = svg(Handle::from_memory(data))
-        //                 .height(Fill)
-        //                 .content_fit(ContentFit::Contain);
-        //             Container::new(svg)
-        //                 .padding(8)
-        //         }
-        //         Err(e) => Container::new(scrollable(
-        //             text(e).size(40)
-        //         )),
-        //     }
-        // }.align_x(Horizontal::Center)
-        //     .align_y(Vertical::Center)
-        //     .height(Fill)
-        //     .width(Fill);
         container(col![row, content])
             .align_x(Horizontal::Center)
             .align_y(Vertical::Top)

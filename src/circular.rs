@@ -53,13 +53,13 @@ impl<'a, Theme> Circular<'a, Theme>
     }
 
     /// Sets the size of the [`Circular`].
-    pub fn size(mut self, size: f32) -> Self {
+    pub const fn size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
     /// Sets the bar height of the [`Circular`].
-    pub fn bar_height(mut self, bar_height: f32) -> Self {
+    pub const fn bar_height(mut self, bar_height: f32) -> Self {
         self.bar_height = bar_height;
         self
     }
@@ -71,7 +71,7 @@ impl<'a, Theme> Circular<'a, Theme>
     }
 
     /// Sets the easing of this [`Circular`].
-    pub fn easing(mut self, easing: &'a Easing) -> Self {
+    pub const fn easing(mut self, easing: &'a Easing) -> Self {
         self.easing = easing;
         self
     }
@@ -84,7 +84,7 @@ impl<'a, Theme> Circular<'a, Theme>
 
     /// Sets the base rotation duration of this [`Circular`]. This is the duration that a full
     /// rotation would take if the cycle rotation were set to 0.0 (no expanding or contracting)
-    pub fn rotation_duration(mut self, duration: Duration) -> Self {
+    pub const fn rotation_duration(mut self, duration: Duration) -> Self {
         self.rotation_duration = duration;
         self
     }
@@ -148,7 +148,7 @@ impl Animation {
         }
     }
 
-    fn start(&self) -> Instant {
+    const fn start(&self) -> Instant {
         match self {
             Self::Expanding { start, .. } | Self::Contracting { start, .. } => {
                 *start
@@ -156,7 +156,7 @@ impl Animation {
         }
     }
 
-    fn last(&self) -> Instant {
+    const fn last(&self) -> Instant {
         match self {
             Self::Expanding { last, .. } | Self::Contracting { last, .. } => {
                 *last
@@ -332,17 +332,20 @@ for Circular<'a, Theme>
                         center: frame.center(),
                         radius: track_radius,
                         start_angle: start,
-                        end_angle: start
-                            + MIN_RADIANS
-                            + WRAP_RADIANS * (self.easing.y_at_x(progress)),
+                        end_angle: WRAP_RADIANS.mul_add(
+                            self.easing.y_at_x(progress),
+                            start + MIN_RADIANS
+                        ),
                     });
                 }
                 Animation::Contracting { progress, .. } => {
                     builder.arc(canvas::path::Arc {
                         center: frame.center(),
                         radius: track_radius,
-                        start_angle: start
-                            + WRAP_RADIANS * (self.easing.y_at_x(progress)),
+                        start_angle: WRAP_RADIANS.mul_add(
+                            self.easing.y_at_x(progress),
+                            start
+                        ),
                         end_angle: start + MIN_RADIANS + WRAP_RADIANS,
                     });
                 }

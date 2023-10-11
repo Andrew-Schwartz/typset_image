@@ -1,5 +1,5 @@
 #![windows_subsystem = "windows"]
-#![warn(clippy::pedantic)]
+#![warn(clippy::pedantic, clippy::nursery)]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,

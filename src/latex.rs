@@ -2,7 +2,7 @@ use std::env;
 use tokio::fs;
 use crate::gui::Dir;
 
-use crate::{backends, gui, GuiError};
+use crate::{backends, GuiError};
 
 const LATEX_START: &str = r"\documentclass[12pt]{article}
 \usepackage{amsmath}
@@ -27,8 +27,8 @@ pub async fn gen_svg(latex: String, dir: Dir, color: String) -> Result<(), GuiEr
         .map_err(|_| GuiError::GetSetCurrentDir)?;
 
     // let dir = gui::get_dir(hash);
-    // fs::create_dir(&dir).await
-    //     .map_err(|_| GuiError::TempDir)?;
+    fs::create_dir(&dir).await
+        .map_err(|_| GuiError::TempDir)?;
 
     // println!("dir = {:?}", dir);
     env::set_current_dir(&dir)
