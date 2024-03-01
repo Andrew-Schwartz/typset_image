@@ -16,6 +16,13 @@ pub enum Backend {
 }
 
 impl Backend {
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::LaTeX => Self::Typst,
+            Self::Typst => Self::LaTeX,
+        }
+    }
+
     pub const fn letter(self) -> &'static str {
         match self {
             Self::LaTeX => "L",
@@ -39,8 +46,8 @@ impl Backend {
 
     pub async fn gen_png(self, eq: String, dir: Dir, color: String, dpi: usize) -> Result<(), GuiError> {
         match self {
-            Backend::LaTeX => latex::gen_png(dir, color, dpi).await,
-            Backend::Typst => typst::gen_png(eq, dir, color, dpi).await,
+            Self::LaTeX => latex::gen_png(dir, color, dpi).await,
+            Self::Typst => typst::gen_png(eq, dir, color, dpi).await,
         }
     }
 }
@@ -83,7 +90,7 @@ pub async fn run_command<I, S>(command: &str, args: I) -> Result<String, Command
         Ok(utf8_to_string(&stdout))
     } else {
         let message = utf8_to_string(&stdout);
-        println!("stdout = {}", message);
+        println!("stdout = {message}");
         println!("stderr = {}", utf8_to_string(&stderr));
         let message = if message.is_empty() {
             utf8_to_string(&stderr)

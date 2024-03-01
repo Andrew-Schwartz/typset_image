@@ -1,9 +1,13 @@
+use std::borrow::Borrow;
 use std::fmt::Display;
 
-use iced::Length;
-use iced::widget::{horizontal_space, Space, vertical_space};
+use iced::{Element, Length};
+use iced::widget::{Button, Checkbox, Column, Container, PickList, ProgressBar, Row, Rule, Scrollable, Space, Text, TextInput, Tooltip};
 
-use crate::gui::types::*;
+use crate::circular::Circular;
+use crate::gui::Message;
+
+// use crate::gui::types::*;
 
 // versions that get the spacing easier
 #[macro_export]
@@ -34,7 +38,7 @@ pub enum ColDir {}
 
 impl Dir for ColDir {
     fn space(length: Length) -> Space {
-        vertical_space(length)
+        Space::with_height(length)
     }
 }
 
@@ -42,12 +46,12 @@ pub enum RowDir {}
 
 impl Dir for RowDir {
     fn space(length: Length) -> Space {
-        horizontal_space(length)
+        Space::with_width(length)
     }
 }
 
 pub trait DirectionalElement<'a, Dir> {
-    fn into_element(self) -> Element<'a>;
+    fn into_element(self) -> Element<'a, Message>;
 }
 
 macro_rules! impl_directional_element {
@@ -56,7 +60,7 @@ macro_rules! impl_directional_element {
     );+ $(;)?) => {
         $(
             impl<'a, Dir> DirectionalElement<'a, Dir> for $ty {
-                fn into_element(self) -> Element<'a> {
+                fn into_element(self) -> Element<'a, Message, iced::Theme, iced::Renderer> {
                     Element::from(self)
                 }
             }
@@ -65,18 +69,18 @@ macro_rules! impl_directional_element {
 }
 
 impl_directional_element! {
-    TextInput<'a>;
-    Container<'a>;
+    TextInput<'a, Message>;
+    Container<'a, Message>;
     Text<'a>;
-    Button<'a>;
-    Row<'a>;
-    Column<'a>;
-    Tooltip<'a>;
-    Scrollable<'a>;
-    Checkbox<'a>;
+    Button<'a, Message>;
+    Row<'a, Message>;
+    Column<'a, Message>;
+    Tooltip<'a, Message>;
+    Scrollable<'a, Message>;
+    Checkbox<'a, Message>;
     Rule;
     ProgressBar;
-    iced::widget::Space;
+    Space;
     Circular<'a>;
 }
 
@@ -89,11 +93,12 @@ impl_directional_element! {
 //     }
 // }
 
-impl<'a, T, Dir> DirectionalElement<'a, Dir> for PickList<'a, T>
+impl<'a, T, L, V, Dir> DirectionalElement<'a, Dir> for PickList<'a, T, L, V, Message>
     where T: Clone + Eq + Display + 'static,
-          [T]: ToOwned<Owned=Vec<T>>,
+          L: Borrow<[T]>,
+          V: Borrow<T>,
 {
-    fn into_element(self) -> Element<'a> {
+    fn into_element(self) -> Element<'a, Message> {
         Element::from(self)
     }
 }
@@ -107,13 +112,13 @@ impl<'a, T, Dir> DirectionalElement<'a, Dir> for PickList<'a, T>
 // }
 
 impl<'a, D: Dir> DirectionalElement<'a, D> for Length {
-    fn into_element(self) -> Element<'a> {
+    fn into_element(self) -> Element<'a, Message> {
         <Space as DirectionalElement<'a, D>>::into_element(D::space(self))
     }
 }
 
 impl<'a, D: Dir> DirectionalElement<'a, D> for u16 {
-    fn into_element(self) -> Element<'a> {
+    fn into_element(self) -> Element<'a, Message> {
         <Space as DirectionalElement<'a, D>>::into_element(D::space(self.into()))
     }
 }
@@ -122,14 +127,14 @@ pub trait SpacingExt {
     fn push_space<L: Into<Length>>(self, length: L) -> Self;
 }
 
-impl<'a> SpacingExt for Column<'a> {
+impl<'a> SpacingExt for Column<'a, Message> {
     fn push_space<L: Into<Length>>(self, length: L) -> Self {
-        self.push(vertical_space(length.into()))
+        self.push(Space::with_height(length))
     }
 }
 
-impl<'a> SpacingExt for Row<'a> {
+impl<'a> SpacingExt for Row<'a, Message> {
     fn push_space<L: Into<Length>>(self, length: L) -> Self {
-        self.push(horizontal_space(length.into()))
+        self.push(Space::with_width(length))
     }
 }

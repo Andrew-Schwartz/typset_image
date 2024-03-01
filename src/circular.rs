@@ -1,30 +1,28 @@
 // from https://github.com/iced-rs/iced/blob/master/examples/loading_spinners/src/circular.rs
 
 //! Show a circular progress indicator.
+use std::f32::consts::PI;
+use std::time::Duration;
+
+use iced::{Background, Color, Element, Event, Length, Radians, Rectangle, Size, Vector};
+use iced::advanced::{Clipboard, Layout, Renderer, Shell, Widget};
 use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{Clipboard, Layout, Renderer, Shell, Widget};
 use iced::event;
 use iced::mouse;
 use iced::time::Instant;
 use iced::widget::canvas;
 use iced::window::{self, RedrawRequest};
-use iced::{
-    Background, Color, Element, Event, Length, Rectangle, Size, Vector,
-};
 
 use super::easing::{self, Easing};
-
-use std::f32::consts::PI;
-use std::time::Duration;
 
 const MIN_RADIANS: f32 = PI / 8.0;
 const WRAP_RADIANS: f32 = 2.0 * PI - PI / 4.0;
 const BASE_ROTATION_SPEED: u32 = u32::MAX / 80;
 
 #[allow(missing_debug_implementations)]
-pub struct Circular<'a, Theme>
+pub struct Circular<'a, Theme = iced::Theme>
     where
         Theme: StyleSheet,
 {
@@ -232,80 +230,39 @@ struct State {
     cache: canvas::Cache,
 }
 
-impl<'a, Message, Theme> Widget<Message, iced::Renderer<Theme>>
-for Circular<'a, Theme>
+impl<'a, Message, Theme> Widget<Message, Theme, iced::Renderer> for Circular<'a, Theme>
     where
         Message: 'a + Clone,
         Theme: StyleSheet,
 {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<State>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(State::default())
-    }
-
-    fn width(&self) -> Length {
-        Length::Fixed(self.size)
-    }
-
-    fn height(&self) -> Length {
-        Length::Fixed(self.size)
+    fn size(&self) -> Size<Length> {
+        Size::new(self.size.into(), self.size.into())
     }
 
     fn layout(
         &self,
-        _renderer: &iced::Renderer<Theme>,
+        _tree: &mut Tree,
+        _renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.width(self.size).height(self.size);
-        let size = limits.resolve(Size::ZERO);
-
-        layout::Node::new(size)
-    }
-
-    fn on_event(
-        &mut self,
-        tree: &mut Tree,
-        event: Event,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _renderer: &iced::Renderer<Theme>,
-        _clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        _viewport: &Rectangle,
-    ) -> event::Status {
-        const FRAME_RATE: u64 = 60;
-
-        let state = tree.state.downcast_mut::<State>();
-
-        if let Event::Window(window::Event::RedrawRequested(now)) = event {
-            state.animation = state.animation.timed_transition(
-                self.cycle_duration,
-                self.rotation_duration,
-                now,
-            );
-
-            state.cache.clear();
-            shell.request_redraw(RedrawRequest::At(
-                now + Duration::from_millis(1000 / FRAME_RATE),
-            ));
-        }
-
-        event::Status::Ignored
+        layout::atomic(limits, self.size, self.size)
     }
 
     fn draw(
         &self,
         tree: &Tree,
-        renderer: &mut iced::Renderer<Theme>,
+        renderer: &mut iced::Renderer,
         theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
+        use iced::advanced::Renderer as _;
+
+        const MIN_ANGLE: Radians = Radians(PI / 8.0);
+        const WRAP_ANGLE: Radians = Radians(2.0 * PI - PI / 4.0);
+
         let state = tree.state.downcast_ref::<State>();
         let bounds = layout.bounds();
         let custom_style =
@@ -324,7 +281,7 @@ for Circular<'a, Theme>
 
             let mut builder = canvas::path::Builder::new();
 
-            let start = state.animation.rotation() * 2.0 * PI;
+            let start = Radians(state.animation.rotation() * 2.0 * PI);
 
             match state.animation {
                 Animation::Expanding { progress, .. } => {
@@ -332,21 +289,18 @@ for Circular<'a, Theme>
                         center: frame.center(),
                         radius: track_radius,
                         start_angle: start,
-                        end_angle: WRAP_RADIANS.mul_add(
-                            self.easing.y_at_x(progress),
-                            start + MIN_RADIANS
-                        ),
+                        end_angle: start
+                            + MIN_ANGLE
+                            + WRAP_ANGLE * (self.easing.y_at_x(progress)),
                     });
                 }
                 Animation::Contracting { progress, .. } => {
                     builder.arc(canvas::path::Arc {
                         center: frame.center(),
                         radius: track_radius,
-                        start_angle: WRAP_RADIANS.mul_add(
-                            self.easing.y_at_x(progress),
-                            start
-                        ),
-                        end_angle: start + MIN_RADIANS + WRAP_RADIANS,
+                        start_angle: start
+                            + WRAP_ANGLE * (self.easing.y_at_x(progress)),
+                        end_angle: start + MIN_ANGLE + WRAP_ANGLE,
                     });
                 }
             }
@@ -370,10 +324,45 @@ for Circular<'a, Theme>
             },
         );
     }
+
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<State>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(State::default())
+    }
+
+    fn on_event(
+        &mut self,
+        tree: &mut Tree,
+        event: Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &iced::Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) -> event::Status {
+        let state = tree.state.downcast_mut::<State>();
+
+        if let Event::Window(_, window::Event::RedrawRequested(now)) = event {
+            state.animation = state.animation.timed_transition(
+                self.cycle_duration,
+                self.rotation_duration,
+                now,
+            );
+
+            state.cache.clear();
+            shell.request_redraw(RedrawRequest::NextFrame);
+        }
+
+        event::Status::Ignored
+    }
 }
 
 impl<'a, Message, Theme> From<Circular<'a, Theme>>
-for Element<'a, Message, iced::Renderer<Theme>>
+for Element<'a, Message, Theme, iced::Renderer>
     where
         Message: Clone + 'a,
         Theme: StyleSheet + 'a,

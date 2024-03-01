@@ -2,50 +2,24 @@ use std::{env, fs, io};
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use iced::{Alignment, Application, Command, ContentFit, Event, font, keyboard, Subscription, Theme, widget};
+use iced::{Alignment, Application, Command, ContentFit, Element, Event, font, keyboard, Renderer, Subscription, Theme, widget};
 use iced::alignment::{Horizontal, Vertical};
-use iced::keyboard::{KeyCode, Modifiers};
+use iced::keyboard::{Key, key::Named};
 use iced::Length::{Fill, FillPortion};
-use iced::widget::{button, container, horizontal_rule, image, pick_list, scrollable, svg, text, text_input};
+use iced::widget::{button, container, Container, horizontal_rule, image, pick_list, scrollable, svg, text, text_input};
 use iced::widget::svg::Handle;
 use iced::widget::text_input::Id;
-use keyboard::Event::KeyPressed;
 use once_cell::sync::Lazy;
 use rfd::{AsyncFileDialog, FileHandle};
 use tempdir::TempDir;
 
-use types::*;
-
 use crate::{col, easing, GuiError, ICON_FONT, ICON_FONT_BYTES, latex, row, typst};
 use crate::backends::Backend;
+use crate::circular::Circular;
 use crate::icons::Icon;
-
-#[allow(dead_code)]
-pub mod types {
-    use super::Message;
-
-    type Renderer = iced::Renderer<iced::Theme>;
-
-    pub type Element<'a> = iced::Element<'a, Message, Renderer>;
-    pub type Container<'a> = iced::widget::Container<'a, Message, Renderer>;
-    pub type Text<'a> = iced::widget::Text<'a, Renderer>;
-    pub type Row<'a> = iced::widget::Row<'a, Message, Renderer>;
-    pub type Column<'a> = iced::widget::Column<'a, Message, Renderer>;
-    pub type Button<'a> = iced::widget::Button<'a, Message, Renderer>;
-    pub type Tooltip<'a> = iced::widget::Tooltip<'a, Message, Renderer>;
-    pub type Scrollable<'a> = iced::widget::Scrollable<'a, Message, Renderer>;
-    pub type TextInput<'a> = iced::widget::TextInput<'a, Message, Renderer>;
-    pub type Checkbox<'a> = iced::widget::Checkbox<'a, Message, Renderer>;
-    pub type PickList<'a, T> = iced::widget::PickList<'a, T, Message, Renderer>;
-    pub type Slider<'a, T> = iced::widget::Slider<'a, T, Message, Renderer>;
-    pub type Rule = iced::widget::Rule<Renderer>;
-    pub type ProgressBar = iced::widget::ProgressBar<Renderer>;
-    pub type Circular<'a> = crate::circular::Circular<'a, iced::Theme>;
-    // pub type NumberInput<'a, T> = iced_aw::native::number_input::NumberInput<'a, T, Message, Renderer>;
-}
 
 #[derive(Default, Debug, PartialEq, Eq, Copy, Clone)]
 pub enum ImageFormat {
@@ -93,7 +67,7 @@ pub enum Message {
     OutDir(String),
     OpenExplorer,
     PickedDir(Option<PathBuf>),
-    SwitchBackend,
+    SetBackend(Backend),
 }
 
 pub type Dir = PathBuf;
@@ -113,7 +87,8 @@ impl Default for State {
 }
 
 pub struct Gui {
-    equation: String,
+    latex_eq: String,
+    typst_eq: String,
     name: Option<String>,
     color: Option<String>,
     compiled_color: String,
@@ -127,9 +102,23 @@ pub struct Gui {
 }
 
 impl Gui {
+    fn eq(&self) -> &str {
+        match self.backend {
+            Backend::LaTeX => &self.latex_eq,
+            Backend::Typst => &self.typst_eq,
+        }
+    }
+
+    fn eq_mut(&mut self) -> &mut String {
+        match self.backend {
+            Backend::LaTeX => &mut self.latex_eq,
+            Backend::Typst => &mut self.typst_eq,
+        }
+    }
+
     fn equation_hash(&self) -> u64 {
         let mut hash = DefaultHasher::default();
-        self.equation.hash(&mut hash);
+        self.latex_eq.hash(&mut hash);
         hash.finish()
     }
 
@@ -146,16 +135,23 @@ impl Gui {
 
     fn copy_to_dest(&self) -> io::Result<()> {
         let dir = self.cache_dir();
+        let from_name = format!(
+            "{}_eq.{}",
+            self.compiled_color,
+            self.format,
+        );
+        let to_name = self.name
+            .as_ref()
+            .map_or_else(
+                || self.format.default_file_name().into(),
+                |s| {
+                    let p: &Path = s.as_ref();
+                    p.with_extension(self.format.to_string())
+                },
+            );
         fs::copy(
-            dir.join(format!(
-                "{}_eq.{}",
-                self.compiled_color,
-                self.format,
-            )),
-            self.out_dir.join(
-                self.name.as_deref()
-                    .unwrap_or(self.format.default_file_name())
-            ),
+            dir.join(from_name),
+            self.out_dir.join(to_name),
         ).map(|_| ())
     }
 }
@@ -166,7 +162,7 @@ fn not_empty(s: &String) -> bool {
 
 const DEFAULT_COLOR: &str = "white";
 
-fn latex_id() -> Id {
+fn eq_editor_id() -> Id {
     Id::new("latex")
 }
 
@@ -191,12 +187,13 @@ impl Application for Gui {
     fn new((): ()) -> (Self, Command<Message>) {
         (
             Self {
-                equation: String::new(),
+                latex_eq: String::new(),
+                typst_eq: String::new(),
                 name: None,
                 color: None,
                 compiled_color: DEFAULT_COLOR.to_string(),
                 format: ImageFormat::default(),
-                dpi: 600,
+                dpi: 1000,
                 out_dir: env::current_dir().unwrap(),
                 state: Default::default(),
                 folder_icon: Icon::Folder,
@@ -204,7 +201,7 @@ impl Application for Gui {
                 typst_dir: TempDir::new("typst_").unwrap(),
             },
             Command::batch([
-                text_input::focus(latex_id()),
+                text_input::focus(eq_editor_id()),
                 font::load(ICON_FONT_BYTES)
                     .map(|_| Message::FontLoaded),
             ])
@@ -218,7 +215,7 @@ impl Application for Gui {
     fn update(&mut self, message: Self::Message) -> Command<Message> {
         match message {
             Message::EditEquation(equation) => {
-                self.equation = equation;
+                *self.eq_mut() = equation;
                 if self.backend == Backend::Typst {
                     self.update(Message::Compile)
                 } else {
@@ -234,7 +231,7 @@ impl Application for Gui {
                 Command::none()
             }
             Message::Compile => {
-                if self.equation.is_empty() {
+                if self.eq().is_empty() {
                     self.state = State::Errored(GuiError::NoEquation(self.backend.stylized()));
                     return Command::none();
                 }
@@ -245,7 +242,7 @@ impl Application for Gui {
                     Backend::LaTeX => {
                         let hash = self.equation_hash();
                         let dir = get_dir(hash);
-                        println!("dir = {:?}", dir);
+                        println!("dir = {dir:?}");
                         if dir.exists() {
                             println!("dir exists!");
                             let img = dir.join(format!(
@@ -269,7 +266,7 @@ impl Application for Gui {
                             println!("doesn't exist, performing `latex::gen_svg`");
                             Command::perform(
                                 latex::gen_svg(
-                                    self.equation.clone(),
+                                    self.latex_eq.clone(),
                                     dir,
                                     color,
                                 ),
@@ -279,7 +276,7 @@ impl Application for Gui {
                     }
                     Backend::Typst => Command::perform(
                         typst::gen_svg(
-                            self.equation.clone(),
+                            self.typst_eq.clone(),
                             self.typst_dir.path().to_owned(),
                             color,
                         ),
@@ -299,7 +296,7 @@ impl Application for Gui {
                             }
                             ImageFormat::Png => Command::perform(
                                 self.backend.gen_png(
-                                    self.equation.clone(),
+                                    self.eq().to_string(),
                                     dir,
                                     self.color().to_string(),
                                     self.dpi,
@@ -364,17 +361,14 @@ impl Application for Gui {
             Message::FontLoaded => {
                 Command::none()
             }
-            Message::SwitchBackend => {
-                self.backend = match self.backend {
-                    Backend::LaTeX => Backend::Typst,
-                    Backend::Typst => Backend::LaTeX,
-                };
+            Message::SetBackend(backend) => {
+                self.backend = backend;
                 self.update(Message::Compile)
             }
         }
     }
 
-    fn view(&self) -> Element<'_> {
+    fn view(&self) -> Element<'_, Message> {
         let png_density = if self.format == ImageFormat::Png {
             row![
                 6,
@@ -392,12 +386,12 @@ impl Application for Gui {
             row![
                 text_input(
                     self.backend.name(),
-                    &self.equation,
+                    self.eq(),
                 ).on_input(Message::EditEquation)
                  .on_submit(Message::Compile)
-                 .id(latex_id()),
+                 .id(eq_editor_id()),
                 button(self.backend.letter())
-                    .on_press(Message::SwitchBackend),
+                    .on_press(Message::SetBackend(self.backend.flip())),
             ],
             6,
             row![
@@ -446,7 +440,7 @@ impl Application for Gui {
             input_col,
             Fill
         ];
-        let content = match &self.state {
+        let content: Container<Message, Theme, Renderer> = match &self.state {
             State::Compiling => {
                 let spinner = Circular::new()
                     .size(200.0)
@@ -464,7 +458,7 @@ impl Application for Gui {
                     self.compiled_color,
                 );
                 let data = fs::read(dir.join(file_name)).unwrap();
-                let svg = svg(Handle::from_memory(data))
+                let svg = svg::<Theme>(Handle::from_memory(data))
                     .height(Fill)
                     .content_fit(ContentFit::Contain);
                 container(svg)
@@ -502,11 +496,19 @@ impl Application for Gui {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        const NONE: Modifiers = Modifiers::empty();
+        // const NONE: Modifiers = Modifiers::empty();
+        // const CMD_SHIFT: Modifiers = Modifiers::COMMAND | Modifiers::SHIFT;
 
-        iced::subscription::events_with(|event, _status| match event {
-            Event::Keyboard(KeyPressed { key_code: KeyCode::Tab, modifiers: NONE }) => Some(Message::FocusNext),
-            Event::Keyboard(KeyPressed { key_code: KeyCode::Tab, modifiers: Modifiers::SHIFT }) => Some(Message::FocusPrevious),
+        iced::event::listen_with(|event, _status| match event {
+            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+                match (modifiers.command(), modifiers.shift(), key.as_ref()) {
+                    (true, true, Key::Named(Named::Tab)) => Some(Message::FocusNext),
+                    (true, _, Key::Named(Named::Tab)) => Some(Message::FocusNext),
+                    (true, _, Key::Character("L")) => Some(Message::SetBackend(Backend::LaTeX)),
+                    (true, _, Key::Character("T")) => Some(Message::SetBackend(Backend::Typst)),
+                    _ => None,
+                }
+            }
             _ => None,
         })
     }

@@ -6,8 +6,10 @@ use crate::GuiError;
 use crate::backends::run_command;
 use crate::gui::Dir;
 
-const TYPST_START: &str = r##"#set page(width: auto, height: auto, margin: 0pt)
-#set text(fill: "##;
+const TYPST_START: &str = r##"
+#import "@preview/physica:0.8.1": *
+#set page(width: auto, height: auto, margin: 0pt)
+#set text(11pt, font: "New Computer Modern", lang: "en", fill: "##;
 
 // using my vendored typst for the --background option for pngs
 const TYPST: &str = r"C:\Users\andre\CLionProjects\typst\target\release\typst.exe";
