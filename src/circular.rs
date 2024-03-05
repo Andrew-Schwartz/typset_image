@@ -5,7 +5,7 @@ use std::f32::consts::PI;
 use std::time::Duration;
 
 use iced::{Background, Color, Element, Event, Length, Radians, Rectangle, Size, Vector};
-use iced::advanced::{Clipboard, Layout, Renderer, Shell, Widget};
+use iced::advanced::{Clipboard, Layout, Shell, Widget};
 use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::tree::{self, Tree};
@@ -17,7 +17,7 @@ use iced::window::{self, RedrawRequest};
 
 use super::easing::{self, Easing};
 
-const MIN_RADIANS: f32 = PI / 8.0;
+// const MIN_RADIANS: f32 = PI / 8.0;
 const WRAP_RADIANS: f32 = 2.0 * PI - PI / 4.0;
 const BASE_ROTATION_SPEED: u32 = u32::MAX / 80;
 

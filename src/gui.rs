@@ -1,11 +1,11 @@
-use std::{env, fs, io};
+use std::{env, fs, io, mem};
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use iced::{Alignment, Application, Command, ContentFit, Element, Event, font, keyboard, Renderer, Subscription, Theme, widget};
+use iced::{Alignment, Application, Command, ContentFit, Element, Event, font, keyboard, Subscription, Theme, widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard::{Key, key::Named};
 use iced::Length::{Fill, FillPortion};
@@ -74,7 +74,9 @@ pub type Dir = PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum State {
-    Compiling,
+    Compiling {
+        previous: Box<State>
+    },
     Svg(Dir),
     Png(Dir),
     Errored(GuiError),
@@ -83,6 +85,60 @@ pub enum State {
 impl Default for State {
     fn default() -> Self {
         Self::Errored(GuiError::NoEquation(Backend::default().stylized()))
+    }
+}
+
+impl State {
+    fn content(&self, compiled_color: &str, backend: Backend) -> Container<'_, Message> {
+        match self {
+            // typst renders fast enough that we don't show the loading spinner
+            State::Compiling { .. } if backend == Backend::LaTeX => {
+                let spinner = Circular::new()
+                    .size(200.0)
+                    .bar_height(20.0)
+                    .easing(&easing::EMPHASIZED_DECELERATE)
+                    .cycle_duration(Duration::from_secs_f32(2.0));
+                container(spinner)
+            }
+            State::Compiling { previous } => {
+                previous.content(compiled_color, backend)
+            }
+            State::Svg(dir) => {
+                // have to read the svg manually because otherwise it won't update the image
+                //  if the same path is used
+                // println!("dir = {:?}", dir);
+                let file_name = format!(
+                    "{}_eq.svg",
+                    compiled_color,
+                );
+                let data = fs::read(dir.join(file_name)).unwrap();
+                let svg = svg::<Theme>(Handle::from_memory(data))
+                    .height(Fill)
+                    .content_fit(ContentFit::Contain);
+                container(svg)
+                    .padding(8)
+            }
+            State::Png(dir) => {
+                // have to read the png manually because otherwise it won't update the image
+                //  if the same path is used
+                let file_name = format!(
+                    "{}_eq.png",
+                    compiled_color,
+                );
+                let data = fs::read(dir.join(file_name)).unwrap();
+                let png = image(image::Handle::from_memory(data))
+                    .height(Fill)
+                    .content_fit(ContentFit::Contain);
+                container(png)
+                    .padding(8)
+            }
+            State::Errored(e) => container(scrollable(
+                text(e).size(40)
+            )),
+        }.align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .height(Fill)
+            .width(Fill)
     }
 }
 
@@ -235,7 +291,7 @@ impl Application for Gui {
                     self.state = State::Errored(GuiError::NoEquation(self.backend.stylized()));
                     return Command::none();
                 }
-                self.state = State::Compiling;
+                self.state = State::Compiling { previous: Box::new(mem::take(&mut self.state)) };
                 let color = self.color().to_string();
                 self.compiled_color = color.clone();
                 match self.backend {
@@ -440,51 +496,8 @@ impl Application for Gui {
             input_col,
             Fill
         ];
-        let content: Container<Message, Theme, Renderer> = match &self.state {
-            State::Compiling => {
-                let spinner = Circular::new()
-                    .size(200.0)
-                    .bar_height(20.0)
-                    .easing(&easing::EMPHASIZED_DECELERATE)
-                    .cycle_duration(Duration::from_secs_f32(2.0));
-                container(spinner)
-            }
-            State::Svg(dir) => {
-                // have to read the svg manually because otherwise it won't update the image
-                //  if the same path is used
-                // println!("dir = {:?}", dir);
-                let file_name = format!(
-                    "{}_eq.svg",
-                    self.compiled_color,
-                );
-                let data = fs::read(dir.join(file_name)).unwrap();
-                let svg = svg::<Theme>(Handle::from_memory(data))
-                    .height(Fill)
-                    .content_fit(ContentFit::Contain);
-                container(svg)
-                    .padding(8)
-            }
-            State::Png(dir) => {
-                // have to read the png manually because otherwise it won't update the image
-                //  if the same path is used
-                let file_name = format!(
-                    "{}_eq.png",
-                    self.compiled_color,
-                );
-                let data = fs::read(dir.join(file_name)).unwrap();
-                let png = image(image::Handle::from_memory(data))
-                    .height(Fill)
-                    .content_fit(ContentFit::Contain);
-                container(png)
-                    .padding(8)
-            }
-            State::Errored(e) => container(scrollable(
-                text(e).size(40)
-            )),
-        }.align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .height(Fill)
-            .width(Fill);
+        let content = self.state.content(&self.compiled_color, self.backend);
+
         container(col![row, content])
             .align_x(Horizontal::Center)
             .align_y(Vertical::Top)
@@ -502,7 +515,7 @@ impl Application for Gui {
         iced::event::listen_with(|event, _status| match event {
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 match (modifiers.command(), modifiers.shift(), key.as_ref()) {
-                    (true, true, Key::Named(Named::Tab)) => Some(Message::FocusNext),
+                    (true, true, Key::Named(Named::Tab)) => Some(Message::FocusPrevious),
                     (true, _, Key::Named(Named::Tab)) => Some(Message::FocusNext),
                     (true, _, Key::Character("L")) => Some(Message::SetBackend(Backend::LaTeX)),
                     (true, _, Key::Character("T")) => Some(Message::SetBackend(Backend::Typst)),
